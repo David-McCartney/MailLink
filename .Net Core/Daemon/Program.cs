@@ -9,14 +9,17 @@ namespace Daemon
 
         public static void Main(string[] args)
         {
+            Console.Write("MailLink Connector - Version 1734 - Copyright (C) David McCartney.\r\n\r\nInitializing...");
+
             // Create an instance of the Connector calss, which manages all mail sessions.
             MailLink.Connector connector = new MailLink.Connector();
 
             connector.LogMessage += onLogMessage;
 
+            Console.Write("\rInitialization Complete. Type 'HELP' for a list of commands.\n\n");
+
             // Start the connector.
             connector.Start();
-
 
             while (true)
             {
@@ -59,8 +62,10 @@ namespace Daemon
         private static void onLogMessage(Object sender, EventArgs e)
         {
             MailLink.Connector connector = (MailLink.Connector)sender;
-
-            Console.Write(connector.Message);
+            if (connector.Message.Level <= connector.LogLevel)
+            {
+                Console.Write("\r{0}\nDaemon:\\>", connector.Message.Text);
+            }
         }
     }
 }
