@@ -6,45 +6,28 @@ using System.Xml.Serialization;
 
 namespace MailLink
 {
-    public enum LogLevel { Error, Warning, Informational, Verbose };
+    public enum LogLevel { Fatal, Error, Warning, Informational, Verbose };
+    public enum ServerType { SMTP, POP3, IMAP }
 
-    [Serializable]
-    [XmlRoot]
+    [Serializable] [XmlRoot(Namespace = "")]
     public class Config
     {
         [XmlElement]
-        public int TickInterval { get; set; }
+        public Setting Settings { get; set; }
 
         [XmlElement]
-        public int TockInterval { get; set; }
-
-        [XmlElement]
-        public int MaxMailboxThreads { get; set; }
-
-        [XmlElement]
-        public int MaxAttachmentThreads { get; set; }
-
-        [XmlElement]
-        public Defaults Default { get; set; }
-
-        [XmlArrayItem(ElementName = "Setting", Type = typeof(Setting))]
-        public List<Setting> Settings { get; set; }
+        public Default Defaults { get; set; }
 
         [XmlArrayItem(ElementName = "Server", Type = typeof(Server))]
         public List<Server> Servers { get; set; }
 
-        [XmlArrayItem(ElementName = "Mailbox", Type = typeof(Mailbox))]
-        public List<Mailbox> Mailboxes { get; set; }
-
         //public Config Config { get; protected set; }
-        static string configFile = @"c:\ProgramData\MailLink\config.xml";
 
         public Config()
         {
-            Settings = new List<Setting>();
+            Defaults = new Default();
+            Settings = new Setting();
             Servers = new List<Server>();
-            Mailboxes = new List<Mailbox>();
-            Default = new Defaults();
 
             //Initialize();
         }
@@ -54,66 +37,84 @@ namespace MailLink
         /// </summary>
         private void Create()
         {
-            TickInterval = 5 * 60; // Five Minutes
-            TockInterval = 15 * 60; // Fifteen Minutes
-            MaxMailboxThreads = 5;
-            MaxAttachmentThreads = 2;
+            // Initialize Settings.
+            Settings.TickInterval = 30; // Fifteen Seconds
+            Settings.TockInterval = 2 * 60; // One Minute
+            Settings.MaxMailboxThreads = 1;
+            Settings.MaxAttachmentThreads = 2;
 
             // Initialize Defaults.
-            Default.LogLevel = LogLevel.Verbose;
-            Default.Pop3Port = 110;
-            Default.Pop3EncriptedPort = 995;
-            Default.ImapPort = 143;
-            Default.ImapEncriptedPort = 993;
-            Default.SmtpPort = 25;
-            Default.SmtpEncriptedPort = 587;
-            Default.KeepMessages = true;
-            Default.DaysToKeep = 14;
+            Defaults.LogLevel = LogLevel.Verbose;
+            Defaults.PollInterval = 1;
+            Defaults.Pop3Port = 110;
+            Defaults.Pop3EncriptedPort = 995;
+            Defaults.ImapPort = 143;
+            Defaults.ImapEncriptedPort = 993;
+            Defaults.SmtpPort = 25;
+            Defaults.SmtpEncriptedPort = 587;
+            Defaults.KeepMessages = true;
+            Defaults.DaysToKeep = 14;
 
-            Settings.Add(new Setting("Testing", "Test"));
-
-            Servers.Add(new Server("SMTP", "CSSOK", "cssokc-ms1.coreslab.local", 25, false, false));
-            Servers.Add(new Server("POP", "Coreslab", "mail.coreslab.com", 110, false, true));
-            Servers.Add(new Server("POP", "IT1", "outlook.office365.com", 995, true, true));
-
-            Mailboxes.Add(new Mailbox
+            Servers = new List<Server>()
             {
-                Alias = "DMC",
-                Name = "David McCartney",
-                Description = "Catchall Mailbox for it1.biz",
-                Inbound = "IT1",
-                Outbound = "CSSOK",
-                Username = "dmc@it1.biz",
-                Password = "Maui2645!",
-                CatchAll = "dmccartney@coreslab.com",
-                DefaultDomain = "it1.biz",
-                PollInterval = 900,
-                Recipients = { new Recipient { Alias = "dmc", Name = "David McCartney", 
-                                               MailFrom = "dmc@it1.biz", MailTo = "dmccartney@coreslab.com" }
-                               //new Recipient { Alias = "dmc", Name = "David McCartney", Server = "CSSOK",
-                               //                FromEmail = "dmc@it1.biz", ToEmail = "dmc@it1.biz" }
+                new Server()
+                {
+                    Type = ServerType.SMTP,
+                    Alias = "CSSOK",
+                    Domain = "cssokc-ms1.coreslab.local",
+                    Port = 25,
+                    RequireSSL = false,
+                    RequireAuth = false
+                },
+                new Server()
+                {
+                    Type = ServerType.POP3,
+                    Alias = "Coreslab",
+                    Domain = "mail.coreslab.com",
+                    Port = 110,
+                    RequireSSL = false,
+                    RequireAuth = false
+                },
+                new Server()
+                {
+                    Type = ServerType.SMTP,
+                    Alias = "TWFM",
+                    Domain = "twfm.net.mail.eo.outlook.com",
+                    Port = 25,
+                    RequireSSL = false,
+                    RequireAuth = false
+                },
+                new Server()
+                {
+                    Type = ServerType.POP3,
+                    Alias = "TWFM",
+                    Domain = "outlook.office365.com",
+                    Port = 995,
+                    RequireSSL = true,
+                    RequireAuth = true
+                },
+                new Server()
+                {
+                    Type = ServerType.POP3,
+                    Alias = "IT1",
+                    Domain = "outlook.office365.com",
+                    Port = 995,
+                    RequireSSL = true,
+                    RequireAuth = true
                 }
-            });
+            };
 
-            Mailboxes.Add(new Mailbox
-            {
-                Alias = "dmccartney",
-                Name = "David McCartney",
-                Description = "Catchall Mailbox for it1.biz",
-                Inbound = "Coreslab",
-                Outbound = "CSSOK",
-                Username = "dmccartney@coreslab.com",
-                Password = "Maui2645!",
-                CatchAll = "dmccartney@coreslab.com",
-                PollInterval = 900,
-                Recipients = { new Recipient { Alias = "dmccartney", Name = "David McCartney", MailFrom = "dmccartney@coreslab.com", MailTo = "dmccartney@coreslab.com" }
-                }
-            });
         }
 
         public void Serialize()
         {
-            FileStream fs = new FileStream(configFile, FileMode.Create);
+            if (!Directory.Exists(@"c:\ProgramData\MailLink"))
+            {
+                Directory.CreateDirectory(@"c:\ProgramData\MailLink");
+            }
+
+            string configFile = @"c:\ProgramData\MailLink\config.xml";
+            FileStream fs = new FileStream(configFile, FileMode.OpenOrCreate);
 
             XmlSerializerNamespaces xmlns = new XmlSerializerNamespaces(); xmlns.Add("", "");
             //xmlns.Add("ML", "https://github.com/David-McCartney/MailLink");
@@ -127,18 +128,14 @@ namespace MailLink
 
         public static Config Deserialize()
         {
-            //Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-            if (!Directory.Exists(@"c:\ProgramData\MailLink"))
-            {
-                Directory.CreateDirectory(@"c:\ProgramData\MailLink");
-            }
+            string configFile = @"c:\ProgramData\MailLink\config.xml";
 
             if (!File.Exists(configFile))
             {
-                Config config = new Config();
-                config.Create();
-                config.Serialize();
-                return config;
+                Config c = new Config();
+                c.Create();
+                c.Serialize();
+                return c;
             }
             else
             {
@@ -156,7 +153,7 @@ namespace MailLink
 
     }
 
-    public class Defaults
+    public class Default
     {
         [XmlElement]
         public LogLevel LogLevel { get; set; }
@@ -170,7 +167,7 @@ namespace MailLink
         public bool KeepMessages { get; set; }
         public int DaysToKeep { get; set; }
 
-        public Defaults()
+        public Default()
         {
 
         }
@@ -178,104 +175,38 @@ namespace MailLink
 
     public class Setting
     {
-        [XmlAttribute]
-        public string Name { get; set; }
-
-        [XmlText]
-        public string Value { get; set; }
+        [XmlElement]
+        public int TickInterval { get; set; }
+        public int TockInterval { get; set; }
+        public int MaxMailboxThreads { get; set; }
+        public int MaxAttachmentThreads { get; set; }
 
         public Setting()
         {
 
         }
-
-        public Setting(String name, string value)
-        {
-            Name = name;
-            Value = value;
-        }
     }
+
 
     public class Server
     {
         [XmlAttribute]
-        public string Type { get; set; }
-
-        [XmlAttribute]
-        public string Name { get; set; }
+        public ServerType Type { get; set; }
+        public string Alias { get; set; }
 
         [XmlElement]
         public string Domain { get; set; }
         public int Port { get; set; }
         public bool RequireSSL { get; set; }
         public bool RequireAuth { get; set; }
+        public string UserName { get; set; }
+        public string Password { get; set; }
+        //TODO: Encript Password
 
         public Server()
         {
-
-        }
-
-        public Server(string type, string name, string domain, int port, bool requireSSL, bool requireAuth)
-        {
-            Type = type;
-            Name = name;
-            Domain = domain;
-            Port = port;
-            RequireSSL = requireSSL;
-            RequireAuth = requireAuth;
         }
     }
 
-    public class Mailbox
-    {
-        [XmlAttribute]
-        public string Alias { get; set; }
 
-        [XmlElement]
-        public string Name { get; set; }
-        public string Description { get; set; }
-        public string Inbound { get; set; }
-        public string Outbound { get; set; }
-        public string Username { get; set; }
-        public string Password { get; set; } //TODO: Encript Password
-        public string CatchAll { get; set; }
-        //TODO: Impliment default email addresses from Recipient Name and Default Domain.
-        public string DefaultDomain { get; set; }
-        public string LastUID { get; set; }
-        public int PollInterval { get; set; }
-
-        [XmlArrayItem(ElementName = "Recipient", Type = typeof(Recipient))]
-        public List<Recipient> Recipients { get; set; }
-
-        [XmlIgnore]
-        public bool Busy { get; set; }
-
-        [XmlIgnore]
-        public DateTime NextPoll { get; set; }
-
-        public Mailbox()
-        {
-            Recipients = new List<Recipient>();
-        }
-
-    }
-
-    public class Recipient
-    {
-        [XmlAttribute]
-        public string Alias { get; set; }
-
-        [XmlElement]
-        public string Name { get; set; }
-        public string Description { get; set; }
-        public string MailFrom { get; set; }
-        public string MailTo { get; set; }  //TODO: Srtich to emaladdress class, and add CC/BCC
-        public string Username { get; set; }
-        public string Password { get; set; } //TODO: Encript Password
-
-        public Recipient()
-        {
-
-        }
-    }
 }

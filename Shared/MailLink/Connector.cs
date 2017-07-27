@@ -6,6 +6,7 @@ using MimeKit;
 using MailKit;
 using MailKit.Net.Pop3;
 using MailKit.Net.Smtp;
+using System.Threading.Tasks;
 
 namespace MailLink
 {
@@ -14,10 +15,14 @@ namespace MailLink
         System.Timers.Timer tick;
         System.Timers.Timer tock;
 
+        List<Task> ticktasks = new List<Task>();
+        List<Task> tocktasks = new List<Task>();
+
         const int DEFAULT_SMTP_PORT = 25;
         const int DEFAULT_POP3_PORT = 110;
 
         private Config config;
+        private Mailboxes mailboxes;
 
         public LogLevel LogLevel { get; set; }
 
@@ -41,19 +46,20 @@ namespace MailLink
 
             Message = new EventMessage();
             config = Config.Deserialize();
+            mailboxes = Mailboxes.Deserialize();
 
             // Load the log level from teh config.
-            LogLevel = config.Default.LogLevel;
+            LogLevel = config.Defaults.LogLevel;
 
             // Inilize polling clock, used for retrieving email from POP and IMAP servers.
             tick = new System.Timers.Timer();
-            tick.Interval = config.TickInterval * 1000;
+            tick.Interval = config.Settings.TickInterval * 1000;
             //tick.Interval = 500;
             tick.Elapsed += onTickElapsed;
 
             // Initialize system clock, used for sending ActivityLogs, ErrorLogs, and Notifications to mail administrators.
             tock = new System.Timers.Timer();
-            tock.Interval = config.TockInterval * 1000;
+            tock.Interval = config.Settings.TockInterval * 1000;
             tock.Elapsed += onTockElapsed;
         }
 
@@ -62,6 +68,7 @@ namespace MailLink
             if (!active) return;
 
             HandleNewMail();
+
         }
 
         private void onTockElapsed(object sender, System.Timers.ElapsedEventArgs e)
@@ -71,172 +78,172 @@ namespace MailLink
             // Update the configuration file.
             config.Serialize();
 
+            // Update the mailbox file.
+            mailboxes.Serialize();
+
             // TODO: Email Notifications
         }
 
-        private void HandleNewMail()
+        // Disable await task warning.
+#pragma warning disable CS4014
+
+        private async void HandleNewMail()
         {
-            List<Mailbox> mailboxes = config.Mailboxes.Where(m => (!m.Busy) && (m.NextPoll == null || m.NextPoll < DateTime.Now)).ToList();
 
-            if (mailboxes.Count == 0) return;
+            List<Mailbox> active = mailboxes.Where(m => (!m.Busy) && (m.NextPoll == null || m.NextPoll < DateTime.Now)).ToList();
 
-            WriteLog(String.Format("{0:u} Processing {1} Mailboxes.", DateTime.Now, config.Mailboxes.Where(u => !u.Busy).Count()), LogLevel.Informational);
+            if (active.Count == 0) return;
 
-            foreach(string servername in mailboxes.Select(m => m.Outbound).ToList().Distinct())
+            WriteLog(String.Format("{0:u} Processing {1} Mailboxes.", DateTime.Now, active.Count), LogLevel.Informational);
+
+            List<string> aliases = active.GroupBy(m => m.Outbound.Alias).Select(g => g.First()).Select(m => m.Outbound.Alias).ToList();
+            foreach (string alias in aliases)
             {
-                using (SmtpClient outbound = new SmtpClient())
+                Server server = config.Servers.Find(s => s.Alias == alias && s.Type == ServerType.SMTP);
+                WriteLog(string.Format("Processing SMTP: {0}:  {1}:{2}", server.Alias, server.Domain, server.Port), LogLevel.Verbose);
+
+                // Process each mailbox associated with the current outbound server.
+                foreach (Mailbox mailbox in mailboxes.Where(m => m.Outbound.Alias == server.Alias).ToList())
                 {
-                    Server server = config.Servers.Where(s => s.Name == servername).First();
-
-                    WriteLog(String.Format("Processing SMTP: {0}:  {1}:{2}", server.Name, server.Domain, server.Port), LogLevel.Verbose);
-
-                    outbound.ServerCertificateValidationCallback = (s, c, h, e) => true;
-                    outbound.Connect(server.Domain, server.Port, server.RequireSSL);
-
-                    if (server.RequireAuth)
+                    while (ticktasks.Count >= config.Settings.MaxMailboxThreads)
                     {
-                        // Only needed if the SMTP server requires authentication
-                        outbound.AuthenticationMechanisms.Remove("XOAUTH2");
-                        outbound.Authenticate("", ""); //TODO: Move the outbound credentials from the Reciepient to the mailbox container.
+                        await Task.Delay(1000);
+                        ticktasks.RemoveAll(t => t.Status == TaskStatus.RanToCompletion);
                     }
 
-                    // Process each mailbox associated with the current outbound server.
-                    foreach(Mailbox mailbox in mailboxes.Where(m => m.Outbound == servername).ToList())
-                    {
-                        using (var inbound = new Pop3Client())
-                        {
-                            ServerConnect(inbound, mailbox);
-
-                            IList<string> uids = GetMessageUIDS(inbound, mailbox);
-
-                        WriteLog(String.Format("Processing Mailbox: {0} : {1}", mailbox.Alias, mailbox.Name), LogLevel.Verbose);
-
-                    }
-                    //message.To.Clear();
-                    ////message.To.Add(new MailboxAddress(recipient.Name, recipient.ToEmail));
-                    //message.To.Add(new MailboxAddress("David McCartney", "dmccartney@coreslab.com"));
-
-                    //client.MessageSent += onClientMessageSent;
-
-                    ////TODO: Add message to relay log.
-
-                    //client.Send(message);
-                    //}
-
-
-                    outbound.Disconnect(true);
+                    ticktasks.Add(Task.Run(() => ProcessMailbox(mailbox, server)));
                 }
-
             }
-
         }
 
-        void none()
-        { 
-            foreach (Mailbox mailbox in config.Mailboxes)
+        private void ProcessMailbox(Mailbox mailbox, Server server)
+        {
+            using (SmtpClient outbound = new SmtpClient(server))
             {
-                if(!mailbox.Busy)
+                try
                 {
-                    mailbox.Busy = true;
+                    outbound.Connect();
+                }
+                catch (Exception e)
+                {
+                    WriteLog(String.Format("SMTP: Error connecting to {0} : {1}", mailbox.Outbound.Alias, e.Message), LogLevel.Error);
+                    return;
+                }
 
-                    new Thread(() =>
+                using (var inbound = new Pop3Client(config.Servers.Find(s => s.Alias == mailbox.Inbound.Alias && s.Type == ServerType.POP3), mailbox))
+                {
+                    try
                     {
-                        Thread.CurrentThread.IsBackground = true;
-
-                        using (var client = new Pop3Client())
+                        try
                         {
-                            client.ServerCertificateValidationCallback = (s, c, h, e) => true;
-
-                            Server server = config.Servers.Where(s => s.Name == mailbox.Inbound).First();
-
-
-                            try
-                            {
-                                client.Connect(server.Domain, server.Port, server.RequireSSL);
-
-                                if (server.RequireAuth)
-                                {
-                                    client.AuthenticationMechanisms.Remove("XOAUTH2");
-                                    client.Authenticate(mailbox.Username, mailbox.Password);
-                                }
-                            }
-                            catch (Exception e)
-                            {
-                                WriteLog(String.Format("Error connectiong to {0} : {1}", mailbox.Inbound, e.Message), LogLevel.Error);
-
-                                if (client != null) client.Dispose();
-                                return;
-                            }
-
-                            try
-                            {
-                                IList<string> uids = client.GetMessageUids();
-                                List<string> queue = new List<string>();
-
-                                int FirstNewID;
-                                int count = uids.Count();
-                                if (String.IsNullOrEmpty(mailbox.LastUID))
-                                {
-                                    // We are going to skip ALL messages, because this is the first run on this mailbox!
-                                    FirstNewID = count;
-                                }
-                                else
-                                {
-                                    // Set FirstNewID to the message following the last message we read before.
-                                    FirstNewID = uids.IndexOf(mailbox.LastUID) + 1;
-                                }
-                                // Set LastUID to the last message in the mailbox.
-                                mailbox.LastUID = uids[count - 1];
-
-
-                                WriteLog(String.Format("User: {0} has {1} messges on {2} ({3} New).", mailbox.Name, uids.Count(), mailbox.Inbound, (uids.Count - FirstNewID)), LogLevel.Informational);
-
-                                for (int i = FirstNewID; i < count; i++)
-                                {
-                                    int size = client.GetMessageSize(i);
-                                    if (size > 500000)
-                                    {
-                                        // Queue the larger messages, so we can get the smaller ones faster.
-                                        WriteLog(String.Format("{0}:Size:{1:N}\n", uids[i], size), LogLevel.Verbose);
-                                        queue.Add(uids[i]);
-                                    }
-                                    else
-                                    {
-                                        var message = client.GetMessage(i);
-                                        WriteLog(String.Format("{0}:{1}:{2}\n", uids[i], message.Attachments.Count(), message.Subject), LogLevel.Verbose);
-                                        //SendMessage(message, mailbox.Recipients);
-                                    }
-
-                                }
-
-                                // Now download larger messages.
-                                foreach(string uid in queue)
-                                {
-                                    var message = client.GetMessage(uids.IndexOf(uid));
-                                    WriteLog(String.Format("{0}:{1}:{2}\n", uid, message.Attachments.Count(), message.Subject), LogLevel.Verbose);
-                                    //SendMessage(message, mailbox.Recipients);
-                                }
-
-                                client.Disconnect(true);
-                            }
-                            catch (Exception e)
-                            {
-                                WriteLog(String.Format("Error parsing messages {0} : {1}", mailbox.Inbound, e.Message), LogLevel.Error);
-
-                            }
-                            if (client != null)
-                            {
-                                client.Disconnect(true);
-                                client.Dispose();
-                            }
+                            inbound.Connect();
+                        }
+                        catch (Exception e)
+                        {
+                            WriteLog(String.Format("POP3: Error connecting to {0} : {1}", mailbox.Inbound, e.Message), LogLevel.Error);
+                            return;
                         }
 
-                        //user.Busy = false;
+                        if (String.IsNullOrEmpty(mailbox.LastUID))
+                        {
+                            WriteLog(string.Format("Skipping New Mailbox: {0} : {1} : {2} Mesages", mailbox.Alias, mailbox.Name, inbound.Count), LogLevel.Warning);
 
-                    }).Start();
+                            // We are going to skip ALL messages, because this is the first run on this mailbox!
+                            mailbox.LastUID = inbound.GetMessageUids().Last();
+                            return;
+                        }
+
+                        // Get a list of all new message UIDs
+                        IList<string> uids = inbound.GetNewMessageUids(mailbox.LastUID);
+                        WriteLog(string.Format("Processing Mailbox: {0} : {1} : {2} Mesages ({3} new)", mailbox.Alias, mailbox.Name, inbound.Count, uids.Count), LogLevel.Verbose);
+
+                        if(uids.Count() == 0)
+                        {
+                            return;
+                        }
+
+                        // Set LastUID to the last message in the mailbox.
+                        mailbox.LastUID = uids.Last();
+
+
+                        if(inbound.IsConnected)inbound.Disconnect(true);
+                        if(inbound != null)inbound.Dispose();
+                    }
+                    catch (Exception e)
+                    {
+                        WriteLog(String.Format("Error downloading from {0} : {1}", mailbox.Inbound.Alias, e.Message), LogLevel.Error);
+                        return;
+                    }
                 }
+                //message.To.Clear();
+                ////message.To.Add(new MailboxAddress(recipient.Name, recipient.ToEmail));
+                //message.To.Add(new MailboxAddress("David McCartney", "dmccartney@coreslab.com"));
+
+                //client.MessageSent += onClientMessageSent;
+
+                ////TODO: Add message to relay log.
+
+                //client.Send(message);
+                //}
+                if (outbound.IsConnected) outbound.Disconnect(true);
+                if (outbound != null) outbound.Dispose();
             }
         }
+
+        //                            List<string> queue = new List<string>();
+
+
+
+
+        //                            WriteLog(String.Format("User: {0} has {1} messges on {2} ({3} New).", mailbox.Name, uids.Count(), mailbox.Inbound, (uids.Count - FirstNewID)), LogLevel.Informational);
+
+        //                            for (int i = FirstNewID; i < count; i++)
+        //                            {
+        //                                int size = client.GetMessageSize(i);
+        //                                if (size > 500000)
+        //                                {
+        //                                    // Queue the larger messages, so we can get the smaller ones faster.
+        //                                    WriteLog(String.Format("{0}:Size:{1:N}\n", uids[i], size), LogLevel.Verbose);
+        //                                    queue.Add(uids[i]);
+        //                                }
+        //                                else
+        //                                {
+        //                                    var message = client.GetMessage(i);
+        //                                    WriteLog(String.Format("{0}:{1}:{2}\n", uids[i], message.Attachments.Count(), message.Subject), LogLevel.Verbose);
+        //                                    //SendMessage(message, mailbox.Recipients);
+        //                                }
+
+        //                            }
+
+        //                            // Now download larger messages.
+        //                            foreach (string uid in queue)
+        //                            {
+        //                                var message = client.GetMessage(uids.IndexOf(uid));
+        //                                WriteLog(String.Format("{0}:{1}:{2}\n", uid, message.Attachments.Count(), message.Subject), LogLevel.Verbose);
+        //                                //SendMessage(message, mailbox.Recipients);
+        //                            }
+
+        //                            client.Disconnect(true);
+        //                        }
+        //                        catch (Exception e)
+        //                        {
+        //                            WriteLog(String.Format("Error parsing messages {0} : {1}", mailbox.Inbound, e.Message), LogLevel.Error);
+
+        //                        }
+        //                        if (client != null)
+        //                        {
+        //                            client.Disconnect(true);
+        //                            client.Dispose();
+        //                        }
+        //                    }
+
+        //                    //user.Busy = false;
+
+        //                }).Start();
+        //            }
+        //        }
+        //    }
+        //}
 
 
         private void onClientMessageSent(object sender, MessageSentEventArgs e)
@@ -296,37 +303,11 @@ namespace MailLink
             config.Serialize();
             //TODO: Disconnect and dispose all active connections.
         }
-    }
-
-        private IList<string> GetMessageUIDS(Pop3Client client, Mailbox mailbox)
-        {
-        }
-
-        private void Pop3Connect(Pop3Client client, Server server)
-        {
-            try
-            {
-                client.ServerCertificateValidationCallback = (s, c, h, e) => true;
-                client.Connect(server.Domain, server.Port, server.RequireSSL);
-
-                if (server.RequireAuth)
-                {
-                    client.AuthenticationMechanisms.Remove("XOAUTH2");
-                    //client.Authenticate(mailbox.Username, mailbox.Password);
-                }
-            }
-            catch (Exception e)
-            {
-                WriteLog(String.Format("Error connectiong to {0} : {1}", server.Name, e.Message), LogLevel.Error, LogLevel.Error);
-
-                if (client != null) client.Dispose();
-            }
-        }
 
         public class EventMessage
-    {
-        public string Text { get; set; }
-        public LogLevel Level { get; set; }
+        {
+            public string Text { get; set; }
+            public LogLevel Level { get; set; }
+        }
     }
-
 }
