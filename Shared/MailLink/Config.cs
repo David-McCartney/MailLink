@@ -9,7 +9,7 @@ namespace MailLink
     public enum LogLevel { Fatal, Error, Warning, Informational, Verbose };
     public enum ServerType { SMTP, POP3, IMAP }
 
-    [Serializable] [XmlRoot(Namespace = "")]
+    [Serializable] [XmlRoot]
     public class Config
     {
         [XmlElement]
@@ -38,14 +38,14 @@ namespace MailLink
         private void Create()
         {
             // Initialize Settings.
-            Settings.TickInterval = 30; // Fifteen Seconds
-            Settings.TockInterval = 2 * 60; // One Minute
-            Settings.MaxMailboxThreads = 1;
-            Settings.MaxAttachmentThreads = 2;
+            Settings.TickInterval = 15; // Fifteen Seconds
+            Settings.TockInterval = 60; // One Minute
+            Settings.MaxMailboxThreads = 5;
+            Settings.MaxQueueThreads = 2;
 
             // Initialize Defaults.
             Defaults.LogLevel = LogLevel.Verbose;
-            Defaults.PollInterval = 1;
+            Defaults.PollInterval = 60; // One Minute
             Defaults.Pop3Port = 110;
             Defaults.Pop3EncriptedPort = 995;
             Defaults.ImapPort = 143;
@@ -73,7 +73,7 @@ namespace MailLink
                     Domain = "mail.coreslab.com",
                     Port = 110,
                     RequireSSL = false,
-                    RequireAuth = false
+                    RequireAuth = true
                 },
                 new Server()
                 {
@@ -103,7 +103,6 @@ namespace MailLink
                     RequireAuth = true
                 }
             };
-
         }
 
         public void Serialize()
@@ -114,16 +113,15 @@ namespace MailLink
             }
 
             string configFile = @"c:\ProgramData\MailLink\config.xml";
-            FileStream fs = new FileStream(configFile, FileMode.OpenOrCreate);
+            using (FileStream fs = new FileStream(configFile, FileMode.OpenOrCreate))
+            {
 
-            XmlSerializerNamespaces xmlns = new XmlSerializerNamespaces(); xmlns.Add("", "");
-            //xmlns.Add("ML", "https://github.com/David-McCartney/MailLink");
-            XmlSerializer xml = new XmlSerializer(typeof(Config));
+                XmlSerializerNamespaces xmlns = new XmlSerializerNamespaces(); xmlns.Add("", "");
+                XmlSerializer xml = new XmlSerializer(typeof(Config));
 
-            xml.Serialize(fs, this, xmlns);
-            //xml.Serialize(fs, configuration);
-
-            fs.Close();
+                xml.Serialize(fs, this, xmlns);
+                fs.Close();
+            }
         }
 
         public static Config Deserialize()
@@ -139,18 +137,17 @@ namespace MailLink
             }
             else
             {
-                FileStream fs = new FileStream(configFile, FileMode.Open);
+                using (FileStream fs = new FileStream(configFile, FileMode.Open))
+                {
+                    XmlSerializer xml = new XmlSerializer(typeof(Config));
 
-                XmlSerializer xml = new XmlSerializer(typeof(Config));
+                    Config config = (Config)xml.Deserialize(fs);
 
-                Config config = (Config)xml.Deserialize(fs);
-                fs.Close();
-
-                return config;
+                    fs.Close();
+                    return config;
+                }
             }
-
         }
-
     }
 
     public class Default
@@ -179,14 +176,13 @@ namespace MailLink
         public int TickInterval { get; set; }
         public int TockInterval { get; set; }
         public int MaxMailboxThreads { get; set; }
-        public int MaxAttachmentThreads { get; set; }
+        public int MaxQueueThreads { get; set; }
 
         public Setting()
         {
 
         }
     }
-
 
     public class Server
     {

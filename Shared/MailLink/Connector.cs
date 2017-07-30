@@ -22,6 +22,7 @@ namespace MailLink
         const int DEFAULT_POP3_PORT = 110;
 
         private Config config;
+        private Queues queue;
         private Mailboxes mailboxes;
 
         public LogLevel LogLevel { get; set; }
@@ -36,6 +37,8 @@ namespace MailLink
         public event EventHandler<EventArgs> LogMessage = delegate { };
 
         private bool active;
+        private bool mailbusy;
+        private bool queuebusy;
 
         /// <summary>
         /// TODO: Comment
@@ -46,6 +49,7 @@ namespace MailLink
 
             Message = new EventMessage();
             config = Config.Deserialize();
+            queue = Queues.Deserialize();
             mailboxes = Mailboxes.Deserialize();
 
             // Load the log level from teh config.
@@ -68,18 +72,35 @@ namespace MailLink
             if (!active) return;
 
             HandleNewMail();
-
+            HandleQueue();
         }
 
         private void onTockElapsed(object sender, System.Timers.ElapsedEventArgs e)
         {
             if (!active) return;
 
-            // Update the configuration file.
+            // Update the configuration,  queue, and mailbox files.
             config.Serialize();
-
-            // Update the mailbox file.
+            queue.Serialize();
             mailboxes.Serialize();
+
+            if (LogLevel == LogLevel.Verbose && queue.Count() > 0)
+            {
+                WriteLog(String.Format("\n{0:u} Message queue contains {1} {2}.",
+                    DateTime.Now, queue.Count(), queue.Count() == 1 ? "message" : "messages"),LogLevel.Verbose);
+                foreach(var q in queue)
+                {
+                    if (q.Progress > 0)
+                    {
+                        WriteLog(String.Format("        {0} : {1} : {2} ({3}%)", q.Alias, q.UID, q.Status, q.Progress), LogLevel.Verbose);
+                    }
+                    else
+                    {
+                        WriteLog(String.Format("        {0} : {1} : {2}", q.Alias, q.UID, q.Status), LogLevel.Verbose);
+                    }
+                }
+                WriteLog("\n", LogLevel.Verbose);
+            }
 
             // TODO: Email Notifications
         }
@@ -89,21 +110,23 @@ namespace MailLink
 
         private async void HandleNewMail()
         {
-
             List<Mailbox> active = mailboxes.Where(m => (!m.Busy) && (m.NextPoll == null || m.NextPoll < DateTime.Now)).ToList();
+            if (active.Count == 0 || mailbusy) return;
+            mailbusy = true;
 
-            if (active.Count == 0) return;
-
-            WriteLog(String.Format("{0:u} Processing {1} Mailboxes.", DateTime.Now, active.Count), LogLevel.Informational);
+            //WriteLog(String.Format("{0:u} Processing {1} Mailboxes.", DateTime.Now, active.Count), LogLevel.Informational);
 
             List<string> aliases = active.GroupBy(m => m.Outbound.Alias).Select(g => g.First()).Select(m => m.Outbound.Alias).ToList();
             foreach (string alias in aliases)
             {
-                Server server = config.Servers.Find(s => s.Alias == alias && s.Type == ServerType.SMTP);
-                WriteLog(string.Format("Processing SMTP: {0}:  {1}:{2}", server.Alias, server.Domain, server.Port), LogLevel.Verbose);
+                List<Mailbox> batch = active.Where(m => m.Outbound.Alias == alias).ToList();
+
+                WriteLog(string.Format("{0:u} Processing SMTP: {1} ({2} {3})",
+                    DateTime.Now, alias, batch.Count(),
+                    batch.Count() == 1 ? "mailbox" : "mailboxes"), LogLevel.Verbose);
 
                 // Process each mailbox associated with the current outbound server.
-                foreach (Mailbox mailbox in mailboxes.Where(m => m.Outbound.Alias == server.Alias).ToList())
+                foreach (Mailbox mailbox in batch)
                 {
                     while (ticktasks.Count >= config.Settings.MaxMailboxThreads)
                     {
@@ -111,15 +134,45 @@ namespace MailLink
                         ticktasks.RemoveAll(t => t.Status == TaskStatus.RanToCompletion);
                     }
 
-                    ticktasks.Add(Task.Run(() => ProcessMailbox(mailbox, server)));
+                    ticktasks.Add(Task.Run(() =>
+                    {
+                        mailbox.Busy = true;
+
+                        ProcessMailbox(mailbox);
+
+                        if (mailbox.PollInterval.HasValue)
+                        {
+                            mailbox.NextPoll = DateTime.Now.AddSeconds((int)mailbox.PollInterval);
+                        }
+                        else
+                        {
+                            mailbox.NextPoll = DateTime.Now.AddSeconds(config.Defaults.PollInterval);
+                        }
+
+                        mailbox.Busy = false;
+                    }));
                 }
             }
+            mailbusy = false;
         }
 
-        private void ProcessMailbox(Mailbox mailbox, Server server)
+        private void onMessageSent(object sender, MessageSentEventArgs e)
         {
+            string result = e.Response.Split(']')[1];
+            WriteLog(string.Format("{0} {1}\n", e.Message.To.First(), result), LogLevel.Verbose);
+
+            //TODO: Update message relay log.
+
+        }
+
+        private void ProcessMailbox(Mailbox mailbox)
+        {
+            Server server = config.Servers.Find(s => s.Alias == mailbox.Outbound.Alias && s.Type == ServerType.SMTP);
+
             using (SmtpClient outbound = new SmtpClient(server))
             {
+                outbound.MessageSent += onMessageSent;
+
                 try
                 {
                     outbound.Connect();
@@ -134,30 +187,40 @@ namespace MailLink
                 {
                     try
                     {
-                        try
-                        {
-                            inbound.Connect();
-                        }
-                        catch (Exception e)
-                        {
-                            WriteLog(String.Format("POP3: Error connecting to {0} : {1}", mailbox.Inbound, e.Message), LogLevel.Error);
-                            return;
-                        }
+                        inbound.Connect();
+                    }
+                    catch (Exception e)
+                    {
+                        WriteLog(String.Format("POP3: Error connecting to {0} : {1}", mailbox.Inbound.Alias, e.Message), LogLevel.Error);
+                        return;
+                    }
+
+                    try
+                    {
 
                         if (String.IsNullOrEmpty(mailbox.LastUID))
                         {
                             WriteLog(string.Format("Skipping New Mailbox: {0} : {1} : {2} Mesages", mailbox.Alias, mailbox.Name, inbound.Count), LogLevel.Warning);
 
-                            // We are going to skip ALL messages, because this is the first run on this mailbox!
-                            mailbox.LastUID = inbound.GetMessageUids().Last();
-                            return;
+                            if (inbound.Count > 0)
+                            {
+                                // We are going to skip ALL messages, because this is the first run on this mailbox!
+                                mailbox.LastUID = inbound.GetMessageUids().Last();
+                                return;
+                            }
+                            else
+                            {
+                                // Return zero as last UID, because mailbox is empty.
+                                mailbox.LastUID = "0";
+                                return;
+                            }
                         }
 
                         // Get a list of all new message UIDs
                         IList<string> uids = inbound.GetNewMessageUids(mailbox.LastUID);
                         WriteLog(string.Format("Processing Mailbox: {0} : {1} : {2} Mesages ({3} new)", mailbox.Alias, mailbox.Name, inbound.Count, uids.Count), LogLevel.Verbose);
 
-                        if(uids.Count() == 0)
+                        if (uids.Count() == 0)
                         {
                             return;
                         }
@@ -165,9 +228,35 @@ namespace MailLink
                         // Set LastUID to the last message in the mailbox.
                         mailbox.LastUID = uids.Last();
 
+                        foreach (string uid in uids)
+                        {
+                            int size = inbound.GetMessageSize(uid);
 
-                        if(inbound.IsConnected)inbound.Disconnect(true);
-                        if(inbound != null)inbound.Dispose();
+                            Queue q = new Queue()
+                            {
+                                Alias = mailbox.Alias,
+                                UID = uid,
+                                Owner = mailbox,
+                                Size = size
+                            };
+
+                            if (size > 0)
+                            {
+                                //TODO: Shorten size.
+                                // Queue the larger messages, so we can get the smaller ones faster.
+                                WriteLog(String.Format("Queued Message {0}:{1} (Size {2:N})", mailbox.Alias, uid, size), LogLevel.Verbose);
+                                queue.Add(q);
+                            }
+                            else
+                            {
+                                TransferMessage(inbound, outbound, q);
+                            }
+
+                        }
+
+
+                        if (inbound.IsConnected) inbound.Disconnect(true);
+                        if (inbound != null) inbound.Dispose();
                     }
                     catch (Exception e)
                     {
@@ -175,45 +264,166 @@ namespace MailLink
                         return;
                     }
                 }
-                //message.To.Clear();
-                ////message.To.Add(new MailboxAddress(recipient.Name, recipient.ToEmail));
-                //message.To.Add(new MailboxAddress("David McCartney", "dmccartney@coreslab.com"));
-
-                //client.MessageSent += onClientMessageSent;
-
-                ////TODO: Add message to relay log.
-
-                //client.Send(message);
-                //}
                 if (outbound.IsConnected) outbound.Disconnect(true);
                 if (outbound != null) outbound.Dispose();
             }
         }
 
-        //                            List<string> queue = new List<string>();
+        private void TransferMessage(Pop3Client inbound, SmtpClient outbound, Queue q)
+        {
+            IList<string> alluids = inbound.GetMessageUids();
+
+            q.Status = Status.Downloading;
+            int index = alluids.IndexOf(q.UID);
+            MimeMessage message = inbound.GetMessage(index);
+
+            //Task<MimeMessage> task = inbound.GetMessageAsync(index);
+            //while (!task.IsCompleted)
+            //{
+            //    await Task.Delay(1000);
+            //    //TODO: get progress
+            //}
+
+            //MimeMessage message = task.Result;
+
+            message.To.Clear();
+            message.Cc.Clear();
+            message.Bcc.Clear();
+
+            foreach (Recipient r in q.Owner.Recipients)
+            {
+                string name;
+                if (string.IsNullOrEmpty(r.Name))
+                {
+                    name = "";
+                }
+                else
+                {
+                    name = r.Name;
+                }
+
+                switch (r.Type)
+                {
+                    case ReceipantType.To:
+                        message.To.Add(new MailboxAddress(name, r.Email));
+                        break;
+
+                    case ReceipantType.Cc:
+                        message.Cc.Add(new MailboxAddress(name, r.Email));
+                        break;
+
+                    case ReceipantType.Bcc:
+                        message.Bcc.Add(new MailboxAddress(name, r.Email));
+                        break;
+                }
 
 
+                ////TODO: Add message to relay log.
+            }
 
+            try
+            {
+                outbound.Send(message);
+                q.Status = Status.Complete;
+            }
+            catch (Exception e)
+            {
+                WriteLog(String.Format("Error uoloading to {0} : {1}", q.Owner.Outbound.Alias, e.Message), LogLevel.Error);
+                q.Status = Status.Failed;
+            }
+        }
+        
+        private async void HandleQueue()
+        {
+            List<Queue> active = queue.Where(q => !q.Owner.Busy && q.Status == Status.Waiting)
+                                      .OrderBy(q => q.Size).ToList();
 
-        //                            WriteLog(String.Format("User: {0} has {1} messges on {2} ({3} New).", mailbox.Name, uids.Count(), mailbox.Inbound, (uids.Count - FirstNewID)), LogLevel.Informational);
+            if (active.Count == 0 || queuebusy) return;
+            queuebusy = true;
 
-        //                            for (int i = FirstNewID; i < count; i++)
-        //                            {
-        //                                int size = client.GetMessageSize(i);
-        //                                if (size > 500000)
-        //                                {
-        //                                    // Queue the larger messages, so we can get the smaller ones faster.
-        //                                    WriteLog(String.Format("{0}:Size:{1:N}\n", uids[i], size), LogLevel.Verbose);
-        //                                    queue.Add(uids[i]);
-        //                                }
-        //                                else
-        //                                {
-        //                                    var message = client.GetMessage(i);
-        //                                    WriteLog(String.Format("{0}:{1}:{2}\n", uids[i], message.Attachments.Count(), message.Subject), LogLevel.Verbose);
-        //                                    //SendMessage(message, mailbox.Recipients);
-        //                                }
+            List<string> aliases = queue.GroupBy(q => q.Alias)
+                                        .Select(g => g.First())
+                                        .Select(q => q.Alias).ToList();
 
-        //                            }
+            foreach (string alias in aliases)
+            {
+                //List<Queue> batch = active.Where(q => q.Alias == alias)
+                //                          .GroupBy(q => q.Owner)
+                //                          .Select(g => g.First()).ToList();
+
+                // TODO: combine duplicte messages, so they only download once.
+
+                //while (tocktasks.Count >= config.Settings.MaxQueueThreads)
+                while (tocktasks.Count >= 1)
+                {
+                    await Task.Delay(1000);
+                    tocktasks.RemoveAll(t => t.Status == TaskStatus.RanToCompletion);
+                }
+
+                Queue q = queue.Where(a => a.Alias == alias).First();
+
+                tocktasks.Add(Task.Run(() =>
+                {
+                    ProcessQueuedMessages(q.Owner);
+                }));
+            }
+            queuebusy = false;
+        }
+
+        private void ProcessQueuedMessages(Mailbox mailbox)
+        {
+            Server serverout = config.Servers.Find(s => s.Alias == mailbox.Outbound.Alias && s.Type == ServerType.SMTP);
+
+            WriteLog(string.Format("Precessing Queued Messages: {0}:  {1}:{2}",
+                serverout.Alias, mailbox.Alias, serverout.Domain, serverout.Port), LogLevel.Verbose);
+
+            using (SmtpClient outbound = new SmtpClient(serverout))
+            {
+                try
+                {
+                    outbound.Connect();
+                }
+                catch (Exception e)
+                {
+                    WriteLog(String.Format("SMTP: Error connecting to {0} : {1}", mailbox.Outbound.Alias, e.Message), LogLevel.Error);
+                    return;
+                }
+
+                Server serverin = config.Servers.Find(s => s.Alias == mailbox.Inbound.Alias && s.Type == ServerType.POP3);
+                using (var inbound = new Pop3Client(serverin, mailbox))
+                {
+                    try
+                    {
+                        inbound.Connect();
+                    }
+                    catch (Exception e)
+                    {
+                        WriteLog(String.Format("POP3: Error connecting to {0} : {1}", mailbox.Inbound.Alias, e.Message), LogLevel.Error);
+                        return;
+                    }
+
+                    try
+                    {
+                        List<Queue> batch = queue.Where(q => q.Owner.Alias == mailbox.Alias).OrderBy(q => q.Size).ToList();
+                        foreach (Queue q in batch)
+                        {
+                            TransferMessage(inbound, outbound, q);
+
+                        }
+                    }
+                    catch (Exception e)
+                    {
+                        WriteLog(String.Format("Error downloading from {0} : {1}", mailbox.Inbound.Alias, e.Message), LogLevel.Error);
+                        return;
+                    }
+                    if (inbound.IsConnected) inbound.Disconnect(true);
+                    if (inbound != null) inbound.Dispose();
+                }
+                if (outbound.IsConnected) outbound.Disconnect(true);
+                if (outbound != null) outbound.Dispose();
+            }
+        }
+
 
         //                            // Now download larger messages.
         //                            foreach (string uid in queue)
@@ -244,17 +454,6 @@ namespace MailLink
         //        }
         //    }
         //}
-
-
-        private void onClientMessageSent(object sender, MessageSentEventArgs e)
-        {
-            string result = e.Response.Split(']')[1];
-            WriteLog(string.Format("{0} {1}\n", e.Message.To.First(), result), LogLevel.Verbose);
-
-            //TODO: Update message relay log.
-
-        }
-
 
         private void WriteLog(string message, LogLevel level)
         {

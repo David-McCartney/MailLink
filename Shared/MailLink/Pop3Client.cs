@@ -4,6 +4,9 @@ using System.Collections.Generic;
 using System.Text;
 using MailKit;
 using System.Xml.Serialization;
+using MimeKit;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace MailLink
 {
@@ -68,11 +71,22 @@ namespace MailLink
             }
         }
 
+        /// <summary>
+        /// Get the size of the specified message, in bytes.
+        /// </summary>
+        /// <param name="uid">Specify UID of desired message</param>
+        /// <returns></returns>
+        public int GetMessageSize(string uid)
+        {
+            IList<string> alluids = base.GetMessageUids();
+            return base.GetMessageSize(alluids.IndexOf(uid));
+        }
+
         public List<string> GetNewMessageUids(string lastuid)
         {
             List<string> newuids = new List<string>();
             IList<string> uids = base.GetMessageUids();
-            int last = 0;
+            Int64 last = 0;
 
             //int count = uids.Count;
             int first = uids.IndexOf(lastuid) + 1;
@@ -81,7 +95,7 @@ namespace MailLink
             {
                 try
                 {
-                    last = int.Parse(lastuid);
+                    last = Convert.ToInt64(lastuid, 16);
                 }
                 catch { }
 
@@ -90,7 +104,7 @@ namespace MailLink
                 {
                     try
                     {
-                        if (int.Parse(uids[i]) > last)
+                        if (Convert.ToInt64(uids[i], 16) > last)
                         {
                             first = i;
                             break;
@@ -105,7 +119,7 @@ namespace MailLink
                     return newuids;
                 }
             }
-            
+
             newuids.AddRange(uids.Skip(first));
 
             //for (int i = first; i < count; i++)
@@ -113,6 +127,34 @@ namespace MailLink
             //    newuids.Add(uids[i]);
             //}
             return newuids;
+        }
+
+        public Task<MimeMessage> GetMessageAsync(int index)
+        {
+            CancellationToken token = new CancellationToken();
+            TransferProgress progress = null;
+
+            //Task<MimeMessage> task = inbound.GetMessageAsync(index, cancel, progress);
+            Task<MimeMessage> task = base.GetMessageAsync(index, token, progress);
+
+            return task;
+        }
+
+    }
+
+
+    public class TransferProgress : ITransferProgress
+    {
+        public long BytesTransferred { get; set; }
+
+        public void Report(long bytesTransferred, long totalSize)
+        {
+            BytesTransferred = bytesTransferred;
+        }
+
+        public void Report(long bytesTransferred)
+        {
+            BytesTransferred = bytesTransferred;
         }
     }
 }

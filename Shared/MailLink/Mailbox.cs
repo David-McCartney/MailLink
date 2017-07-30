@@ -6,7 +6,7 @@ using System.Xml.Serialization;
 
 namespace MailLink
 {
-    public enum Mail { To, Cc, Bcc, From }
+    public enum ReceipantType { To, Cc, Bcc, From }
 
     [Serializable] [XmlRoot(ElementName = "Mailboxes")]
     public class Mailboxes : List<Mailbox>
@@ -25,7 +25,7 @@ namespace MailLink
             {
                 Alias = "micro",
                 Name = "MicroBlaster",
-                PollInterval = 15,
+                PollInterval = 300, // Five Minutes
                 Inbound = new Credentials { Alias = "TWFM", Username = "dmc@twfm.net", Password = "m+5?VYJNtk4@" },
                 Outbound = new Credentials { Alias = "TWFM", Username = "dmc@twfm.net", Password = "m+5?VYJNtk4@" },
                 Recipients = new List<Recipient>
@@ -38,12 +38,25 @@ namespace MailLink
                 Alias = "dmc",
                 Name = "David McCartney",
                 CatchAll = "dmc@it1.biz",
+                PollInterval = 120, //Two Minutes
                 Inbound = new Credentials { Alias = "IT1", Username = "dmc@it1.biz", Password = "Mz35bvj!Dfu@" },
                 Outbound = new Credentials { Alias = "CSSOK" },
                 Recipients = new List<Recipient>
                 {
                     new Recipient {Email = "dmc@it1.biz"},
-                    new Recipient{Type = Mail.Cc, Email = "dmccartney@coreslab.com"}
+                    new Recipient{Type = ReceipantType.Cc, Email = "dmccartney@coreslab.com"}
+                }
+            });
+            Add(new Mailbox()
+            {
+                Alias = "dmccartney",
+                Name = "David McCartney",
+                Inbound = new Credentials { Alias = "Coreslab", Username = "dmccartney", Password = "rPjx3Q!SgwT7" },
+                Outbound = new Credentials { Alias = "CSSOK" },
+                DaysToKeep = 1,
+                Recipients = new List<Recipient>
+                {
+                    new Recipient{Email = "dmccartney@coreslab.com"}
                 }
             });
         }
@@ -56,17 +69,15 @@ namespace MailLink
             }
 
             string mailboxFile = @"c:\ProgramData\MailLink\mailbox.xml";
-            FileStream fs = new FileStream(mailboxFile, FileMode.OpenOrCreate);
+            using (FileStream fs = new FileStream(mailboxFile, FileMode.OpenOrCreate))
+            {
+                XmlSerializerNamespaces xmlns = new XmlSerializerNamespaces(); xmlns.Add("", "");
+                XmlSerializer xml = new XmlSerializer(typeof(Mailboxes));
 
+                xml.Serialize(fs, this, xmlns);
 
-            XmlSerializerNamespaces xmlns = new XmlSerializerNamespaces(); xmlns.Add("", "");
-            //xmlns.Add("ML", "https://github.com/David-McCartney/MailLink");
-            XmlSerializer xml = new XmlSerializer(typeof(Mailboxes));
-
-            xml.Serialize(fs, this, xmlns);
-            //xml.Serialize(fs, configuration);
-
-            fs.Close();
+                fs.Close();
+            }
         }
 
         public static Mailboxes Deserialize()
@@ -82,14 +93,16 @@ namespace MailLink
             }
             else
             {
-                FileStream fs = new FileStream(mailboxFile, FileMode.Open);
+                using (FileStream fs = new FileStream(mailboxFile, FileMode.Open))
+                {
 
-                XmlSerializer xml = new XmlSerializer(typeof(Mailboxes));
+                    XmlSerializer xml = new XmlSerializer(typeof(Mailboxes));
 
-                Mailboxes m = (Mailboxes)xml.Deserialize(fs);
-                fs.Close();
+                    Mailboxes m = (Mailboxes)xml.Deserialize(fs);
+                    fs.Close();
 
-                return m;
+                    return m;
+                }
             }
         }
     }
@@ -104,9 +117,16 @@ namespace MailLink
         public string Description { get; set; }
         public string CatchAll { get; set; }
         public string LastUID { get; set; }
-        public int PollInterval { get; set; }
         public Credentials Inbound { get; set; }
         public Credentials Outbound { get; set; }
+
+        [XmlElement]
+        public int? PollInterval { get; set; }
+        public bool ShouldSerializePollInterval() { return PollInterval.HasValue; }
+
+        [XmlElement]
+        public int? DaysToKeep { get; set; }
+        public bool ShouldSerializeDaysToKeep() { return DaysToKeep.HasValue; }
 
         [XmlArrayItem(ElementName = "Recipient", Type = typeof(Recipient))]
         public List<Recipient> Recipients { get; set; }
@@ -121,15 +141,15 @@ namespace MailLink
         {
             Recipients = new List<Recipient>();
         }
+
     }
 
     public class Credentials
     {
         [XmlAttribute]
-        public ServerType Type { get; set; }
+        public string Alias { get; set; }
 
         [XmlElement]
-        public string Alias { get; set; }
         public string Username { get; set; }
         public string Password { get; set; }
         //TODO: Encript passwords
@@ -142,9 +162,14 @@ namespace MailLink
     public class Recipient
     {
         [XmlAttribute]
-        public MailLink.Mail Type { get; set; }
+        public ReceipantType Type { get; set; }
+        public bool ShouldSerializeType() { return Type != 0; }
 
         [XmlElement]
+        public string Name { get; set; }
+        public bool ShouldSerializeName() { return String.IsNullOrEmpty(Name);}
+
+        [XmlText]
         public string Email { get; set; }
 
         public Recipient()
