@@ -9,6 +9,6 @@ Eventually I will add IMAP support, but I had an immediate need for a POP3 conne
 
 ## Active Contributers:
 
-* David O. McCartney
+* David McCartney
 
 If you would like to contribute to this project, please email DMC@IT1.BIZ for further information.
