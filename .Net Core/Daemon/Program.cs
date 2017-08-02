@@ -64,7 +64,7 @@ namespace Daemon
             MailLink.Connector connector = (MailLink.Connector)sender;
             if (connector.Message.Level <= connector.LogLevel)
             {
-                Console.Write("\r{0}\nDaemon:\\>", connector.Message.Text);
+                Console.Write("\r{0:u} {1}\nDaemon:\\>", DateTime.Now, connector.Message.Text);
             }
         }
     }

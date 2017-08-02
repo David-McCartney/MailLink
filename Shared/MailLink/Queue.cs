@@ -6,10 +6,9 @@ using System.Xml.Serialization;
 
 namespace MailLink
 {
-    public enum Status { Waiting, Downloading, Complete, Failed }
+    public enum Status { Waiting, Downloading, Uploading, Failed, Complete }
 
-    [Serializable]
-    [XmlRoot(ElementName = "Queues")]
+    [Serializable] [XmlRoot]
     public class Queues : List<Queue>
     {
 
@@ -63,31 +62,21 @@ namespace MailLink
     public class Queue
     {
         [XmlAttribute]
-        public string Alias { get; set; }
+        //public string Alias { get; set; }
         public string UID { get; set; }
 
         [XmlElement]
-        public Status Status { get; set; }
         public string MessageID { get; set; }
-        public Mailbox Owner { get; set; }
+        public String Owner { get; set; }
         public int Size { get; set; }
+        public Status Status { get; set; }
 
         [XmlIgnore]
         public int Progress { get; set; }
 
-        [XmlIgnore]
-        public DateTime NextPoll { get; set; }
-
         public Queue()
         {
         }
-
-        public Queue(string alias, string uid)
-        {
-            Alias = alias;
-            UID = uid;
-        }
-    }
-
+     }
 }
 

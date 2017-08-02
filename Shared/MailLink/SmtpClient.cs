@@ -1,10 +1,6 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Text;
-using MailKit;
-using System.Xml.Serialization;
+﻿
 
-namespace MailLink 
+namespace MailLink
 {
     public class SmtpClient : MailKit.Net.Smtp.SmtpClient
     {
@@ -32,5 +28,35 @@ namespace MailLink
             }
 
         }
+
+        //readonly List<SmtpCommandException> exceptions = new List<SmtpCommandException>();
+
+        //protected override void OnSenderAccepted(MimeMessage message, MailboxAddress mailbox, SmtpResponse response)
+        //{
+        //    exceptions.Clear();
+        //}
+
+        //protected override void OnRecipientNotAccepted(MimeMessage message, MailboxAddress mailbox, SmtpResponse response)
+        //{
+        //    try
+        //    {
+        //        base.OnRecipientNotAccepted(message, mailbox, response);
+        //    }
+        //    catch (SmtpCommandException ex)
+        //    {
+        //        exceptions.Add(ex);
+        //    }
+        //}
+
+        //protected override void OnNoRecipientsAccepted(MimeMessage message)
+        //{
+        //    if (exceptions.Count == 1)
+        //        throw exceptions[0];
+
+        //    throw new AggregateException(exceptions.ToArray());
+        //}
+
     }
+
 }
+

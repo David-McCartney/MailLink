@@ -93,6 +93,8 @@ namespace MailLink
 
             if (first == 0)
             {
+                first = uids.Count() - 1;
+
                 try
                 {
                     last = Convert.ToInt64(lastuid, 16);
@@ -113,43 +115,44 @@ namespace MailLink
                     catch { }
                 }
 
-                if (first == 0)
-                {
-                    // No new messages were found. Return empty list.
-                    return newuids;
-                }
+            //    if (first == 0)
+            //    {
+            //        // No new messages were found. Return empty list.
+            //        return newuids;
+            //    }
             }
 
             newuids.AddRange(uids.Skip(first));
-
-            //for (int i = first; i < count; i++)
-            //{
-            //    newuids.Add(uids[i]);
-            //}
             return newuids;
         }
 
-        public Task<MimeMessage> GetMessageAsync(int index)
+        public MimeMessage GetMessage(string uid)
         {
             CancellationToken token = new CancellationToken();
             TransferProgress progress = null;
 
+            int index = base.GetMessageUids().IndexOf(uid);
+
             //Task<MimeMessage> task = inbound.GetMessageAsync(index, cancel, progress);
+            //Task<MimeMessage> task = base.GetMessageAsync(index, token, progress);''==
+
             Task<MimeMessage> task = base.GetMessageAsync(index, token, progress);
 
-            return task;
+            while (!task.IsCompleted) Thread.Sleep(1000);
+            return task.Result; 
         }
-
     }
 
 
     public class TransferProgress : ITransferProgress
     {
         public long BytesTransferred { get; set; }
+        public long TotalSize { get; set; }
 
         public void Report(long bytesTransferred, long totalSize)
         {
             BytesTransferred = bytesTransferred;
+            TotalSize = totalSize;
         }
 
         public void Report(long bytesTransferred)

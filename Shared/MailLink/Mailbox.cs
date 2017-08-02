@@ -1,18 +1,22 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Runtime.Serialization;
 using System.Text;
 using System.Xml.Serialization;
 
 namespace MailLink
 {
-    public enum ReceipantType { To, Cc, Bcc, From }
+    public enum RecipientType { To, Cc, Bcc, From }
 
-    [Serializable] [XmlRoot(ElementName = "Mailboxes")]
+    [Serializable] [XmlRoot]
     public class Mailboxes : List<Mailbox>
     {
+        
+
         public Mailboxes()
         {
+            
         }
 
         /// <summary>
@@ -28,10 +32,7 @@ namespace MailLink
                 PollInterval = 300, // Five Minutes
                 Inbound = new Credentials { Alias = "TWFM", Username = "dmc@twfm.net", Password = "m+5?VYJNtk4@" },
                 Outbound = new Credentials { Alias = "TWFM", Username = "dmc@twfm.net", Password = "m+5?VYJNtk4@" },
-                Recipients = new List<Recipient>
-                {
-                    new Recipient {Email = "dmc@it1.biz"},
-                }
+                Recipients = new List<Recipient> { new Recipient { Name = "MicroBlaster", Address = "dmc@it1.biz" } }
             });
             Add(new Mailbox()
             {
@@ -41,10 +42,9 @@ namespace MailLink
                 PollInterval = 120, //Two Minutes
                 Inbound = new Credentials { Alias = "IT1", Username = "dmc@it1.biz", Password = "Mz35bvj!Dfu@" },
                 Outbound = new Credentials { Alias = "CSSOK" },
-                Recipients = new List<Recipient>
-                {
-                    new Recipient {Email = "dmc@it1.biz"},
-                    new Recipient{Type = ReceipantType.Cc, Email = "dmccartney@coreslab.com"}
+                Recipients = new List<Recipient> {
+                    new Recipient { Type=RecipientType.To,  Address = "dmccartney@coreslab.com" },
+                    new Recipient { Type=RecipientType.Bcc, Address = "dmc@it1.biz" }
                 }
             });
             Add(new Mailbox()
@@ -53,12 +53,25 @@ namespace MailLink
                 Name = "David McCartney",
                 Inbound = new Credentials { Alias = "Coreslab", Username = "dmccartney", Password = "rPjx3Q!SgwT7" },
                 Outbound = new Credentials { Alias = "CSSOK" },
-                DaysToKeep = 1,
-                Recipients = new List<Recipient>
-                {
-                    new Recipient{Email = "dmccartney@coreslab.com"}
-                }
+                Recipients = new List<Recipient> { new Recipient { Address = "dmccartney@coreslab.com" } },
+                DaysToKeep = 1
             });
+            //Add(new Mailbox()
+            //{
+            //    Alias = "kseat",
+            //    Name = "Kamden Seat",
+            //    Inbound = new Credentials { Alias = "Coreslab", Username = "kseat", Password = "Se@t74" },
+            //    Outbound = new Credentials { Alias = "CSSOK" },
+            //    DaysToKeep = 1,
+            //});
+            //Add(new Mailbox()
+            //{
+            //    Alias = "ahernandez",
+            //    Name = "Anna Hernandez",
+            //    Inbound = new Credentials { Alias = "Coreslab", Username = "ahernandez", Password = "An@h2012!" },
+            //    Outbound = new Credentials { Alias = "CSSOK" },
+            //    DaysToKeep = 1,
+            //});
         }
 
         public void Serialize()
@@ -72,6 +85,7 @@ namespace MailLink
             using (FileStream fs = new FileStream(mailboxFile, FileMode.OpenOrCreate))
             {
                 XmlSerializerNamespaces xmlns = new XmlSerializerNamespaces(); xmlns.Add("", "");
+                //XmlSerializer xml = new XmlSerializer(typeof(Mailboxes), new Type[] { typeof(MailTo), typeof(MailCc), typeof(MailBcc) });
                 XmlSerializer xml = new XmlSerializer(typeof(Mailboxes));
 
                 xml.Serialize(fs, this, xmlns);
@@ -130,6 +144,7 @@ namespace MailLink
 
         [XmlArrayItem(ElementName = "Recipient", Type = typeof(Recipient))]
         public List<Recipient> Recipients { get; set; }
+        public bool ShouldSerializeRecipients() { return Recipients.Count > 0; }
 
         [XmlIgnore]
         public bool Busy { get; set; }
@@ -159,21 +174,30 @@ namespace MailLink
         }
     }
 
-    public class Recipient
+    public class Recipient : MimeKit.MailboxAddress
     {
         [XmlAttribute]
-        public ReceipantType Type { get; set; }
-        public bool ShouldSerializeType() { return Type != 0; }
+        public RecipientType Type { get; set; }
+        public bool ShouldSerializeType() { return Type > 0; }
 
         [XmlElement]
-        public string Name { get; set; }
-        public bool ShouldSerializeName() { return String.IsNullOrEmpty(Name);}
+        public new string Name { get => base.Name; set => base.Name = value; }
+        public new string Address { get => base.Address; set => base.Address = value; }
 
-        [XmlText]
-        public string Email { get; set; }
+        public new string IsInternational { get; set; }
+        public new Encoding Encoding { get; set; }
+        public new MimeKit.DomainList Route { get; set; }
 
-        public Recipient()
+
+        public Recipient() : base("", "")
         {
+
+        }
+
+        public Recipient(string name, string address) : base(name, address)
+        {
+            Address = address;
+            Name = name;
         }
     }
 }
