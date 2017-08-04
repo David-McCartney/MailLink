@@ -30,7 +30,7 @@ namespace MailLink
         public EventMessage Message { get; protected set; }
 
         /// <summary>
-        /// Occurs when a message needs to be written to the event log.
+        /// Raised when an EventMessage needs to be written to the event log.
         /// </summary>
         /// <param name="sender"></param>
         /// <param name="e"></param>
@@ -79,27 +79,38 @@ namespace MailLink
         {
             if (!active) return;
 
+            // TODO: Remove expired queue items.
             // Cleanup the queue
             queue.RemoveAll(q => q.Status == Status.Complete);
 
+            //TODO: only update if modified
             // Update the configuration,  queue, and mailbox files.
             config.Serialize();
             queue.Serialize();
             mailboxes.Serialize();
 
-            if (LogLevel == LogLevel.Verbose && queue.Count() > 0)
+            if (LogLevel == LogLevel.Informational && queue.Count() > 0)
             {
                 WriteLog(String.Format("\n Message queue contains {0} {1}.",
                     queue.Count(), queue.Count() == 1 ? "message" : "messages"),LogLevel.Informational);
                 foreach(var q in queue)
                 {
-                    if (q.Progress > 0)
+
+                    if (q.BytesTransfered > 0)
                     {
-                        WriteLog(String.Format("        {0} : {1} : {2} ({3}%)", q.Owner, q.UID, q.Status, q.Progress), LogLevel.Verbose);
+                        long percentage = 0;
+                        try
+                        {
+                            percentage = q.BytesTransfered * 100 / q.Size;
+                        }
+                        catch { }
+
+                        WriteLog(String.Format("  {0} : {1} : {2} - {3:N}bytes ({4}%)", 
+                            q.Owner, q.Uid, q.Status, q.BytesTransfered, percentage), LogLevel.Informational);
                     }
                     else
                     {
-                        WriteLog(String.Format("        {0} : {1} : {2}", q.Owner, q.UID, q.Status), LogLevel.Verbose);
+                        WriteLog(String.Format("  {0} : {1} : {2}  ", q.Owner, q.Uid, q.Status), LogLevel.Informational);
                     }
                 }
                 WriteLog("\n", LogLevel.Verbose);
@@ -107,6 +118,19 @@ namespace MailLink
 
             // TODO: Email Notifications
         }
+        private void onProgressChanged(object sender, EventArgs e)
+        {
+            Pop3Client inbound = (Pop3Client)sender;
+
+            try
+            {
+                Queue q = queue.Where(queue => queue.Uid == inbound.Uid).First();
+
+                q.BytesTransfered = inbound.BytesTransfered;
+            }
+            catch { }
+        }
+
 
         private void onMessageSent(object sender, MessageSentEventArgs e)
         {
@@ -121,6 +145,7 @@ namespace MailLink
                 if(result.Contains("Queued mail for delivery"))
                 {
                     q.Status = Status.Complete;
+                    
                 }
                 else
                 {
@@ -128,13 +153,14 @@ namespace MailLink
                 }
             }
             catch { }
+            //Error uoloading to CSSOK : 5.3.4 Message size exceeds fixed maximum message size
 
             //TODO: Update message relay log.
 
         }
 
-// Disable await task warning.
-//#pragma warning disable CS4014
+        // Disable await task warning.
+        //#pragma warning disable CS4014
 
         private async void HandleNewMail()
         {
@@ -166,7 +192,7 @@ namespace MailLink
                     {
                         mailbox.Busy = true;
 
-                        ProcessMailbox(mailbox);
+                        ProcessMailboxAsync(mailbox);
 
                         if (mailbox.PollInterval.HasValue)
                         {
@@ -184,12 +210,13 @@ namespace MailLink
             mailbusy = false;
         }
 
-        private void ProcessMailbox(Mailbox mailbox)
+        private void ProcessMailboxAsync(Mailbox mailbox)
         {
             Server server = config.Servers.Find(s => s.Alias == mailbox.Outbound.Alias && s.Type == ServerType.SMTP);
 
             using (SmtpClient outbound = new SmtpClient(server))
             {
+                outbound.MessageSent += onMessageSent;
 
                 try
                 {
@@ -236,6 +263,7 @@ namespace MailLink
 
                         // Get a list of all new message UIDs
                         IList<string> uids = inbound.GetNewMessageUids(mailbox.LastUID);
+                        //uids.Remove(mailbox.LastUID);
                         if (uids.Count > 0)
                         {
                             WriteLog(string.Format("Processing Mailbox: {0} : {1} : {2} Mesages ({3} new)", mailbox.Alias, mailbox.Name, inbound.Count, uids.Count), LogLevel.Informational);
@@ -258,12 +286,12 @@ namespace MailLink
 
                             Queue q = new Queue()
                             {
-                                UID = uid,
+                                Uid = uid,
                                 Owner = mailbox.Alias,
                                 Size = size
                             };
 
-                            if (size > 50000)
+                            if (size > 2 * 1024 * 1024) // 2Mb
                             {
                                 //TODO: Shorten size.
                                 // Queue the larger messages, so we can get the smaller ones faster.
@@ -273,11 +301,26 @@ namespace MailLink
                             else
                             {
                                 WriteLog(String.Format("Downloading Message {0}:{1} (Size {2:N})", mailbox.Alias, uid, size), LogLevel.Verbose);
+                                q.Status = Status.Downloading;
+                                queue.Add(q);
                                 TransferMessage(inbound, outbound, q);
                             }
-
                         }
 
+                        //TODO: Keep x days
+                        Thread.Sleep(1000);
+
+                        foreach (string uid in uids)
+                        {
+                            Queue q = queue.Find(c => c.Uid == uid);
+                            if (q != null)
+                            {
+                                if (q.Status == Status.Complete)
+                                {
+                                    inbound.DeleteMessage(uid);
+                                }
+                            }
+                        }
 
                         if (inbound.IsConnected) inbound.Disconnect(true);
                         if (inbound != null) inbound.Dispose();
@@ -342,11 +385,12 @@ namespace MailLink
             mailbox.Busy = true;
 
             WriteLog(string.Format("Precessing Queued Messages: {0}:  {1}:{2}",
-                serverout.Alias, mailbox.Alias, serverout.Domain, serverout.Port), LogLevel.Verbose);
+                serverout.Alias, mailbox.Alias, serverout.Domain, serverout.Port), LogLevel.Informational);
 
             using (SmtpClient outbound = new SmtpClient(serverout))
             {
                 outbound.MessageSent += onMessageSent;
+                //TODO: outbound progress
 
                 try
                 {
@@ -361,6 +405,7 @@ namespace MailLink
                 Server serverin = config.Servers.Find(s => s.Alias == mailbox.Inbound.Alias && s.Type == ServerType.POP3);
                 using (var inbound = new Pop3Client(serverin, mailbox))
                 {
+                    inbound.ProgressChanged += onProgressChanged;
                     try
                     {
                         inbound.Connect();
@@ -382,7 +427,7 @@ namespace MailLink
                     }
                     catch (Exception e)
                     {
-                        WriteLog(String.Format("Error downloading from {0} : {1}", mailbox.Inbound.Alias, e.Message), LogLevel.Error);
+                        WriteLog(String.Format("Error transfering from {0} : {1}", mailbox.Inbound.Alias, e.Message), LogLevel.Error);
                         return;
                     }
                     if (inbound.IsConnected) inbound.Disconnect(true);
@@ -394,31 +439,27 @@ namespace MailLink
             mailbox.Busy = false;
         }
 
+
         private void TransferMessage(Pop3Client inbound, SmtpClient outbound, Queue q)
         {
             IList<string> alluids = inbound.GetMessageUids();
+            MimeMessage message;
 
             q.Status = Status.Downloading;
             //int index = alluids.IndexOf(q.UID);
-            MimeMessage message = inbound.GetMessage(q.UID);
+
+            try
+            {
+                message = inbound.GetMessage(q.Uid);
+            }
+            catch (Exception e)
+            {
+                q.Status = Status.Failed;
+                WriteLog(String.Format("Error receiving from {0} : {1}", q.Owner, e.Message), LogLevel.Error);
+                return;
+            }
 
             Mailbox mailbox = mailboxes.Where(m => m.Alias == q.Owner).First();
-
-
-            //Task<MimeMessage> task = inbound.GetMessage(index);
-            //while (!task.IsCompleted)
-            //{
-            //    await Task.Delay(1000);
-            //    //TODO: get progress
-            //}
-
-            //MimeMessage message = task.Result;
-
-            //message.To.Clear();
-            //message.Cc.Clear();
-            //message.Bcc.Clear();
-            //System.Net.Mail.SmtpClient test = new System.Net.Mail.SmtpClient();
-            //System.Net.Mail.MailMessage mail;
 
             foreach (Recipient recipient in mailbox.Recipients.Where(r => r.Type == RecipientType.To))
             {

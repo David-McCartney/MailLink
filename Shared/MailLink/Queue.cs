@@ -24,14 +24,25 @@ namespace MailLink
             }
 
             string queueFile = @"c:\ProgramData\MailLink\queue.xml";
-            using (FileStream fs = new FileStream(queueFile, FileMode.OpenOrCreate))
+
+            if (this.Count == 0)
             {
-                XmlSerializerNamespaces xmlns = new XmlSerializerNamespaces(); xmlns.Add("", "");
-                XmlSerializer xml = new XmlSerializer(typeof(Queues));
+                if (File.Exists(queueFile))
+                {
+                    File.Delete(queueFile);
+                }
+            }
+            else
+            {
+                using (FileStream fs = new FileStream(queueFile, FileMode.OpenOrCreate))
+                {
+                    XmlSerializerNamespaces xmlns = new XmlSerializerNamespaces(); xmlns.Add("", "");
+                    XmlSerializer xml = new XmlSerializer(typeof(Queues));
 
-                xml.Serialize(fs, this, xmlns);
+                    xml.Serialize(fs, this, xmlns);
 
-                fs.Close();
+                    fs.Close();
+                }
             }
         }
 
@@ -42,7 +53,7 @@ namespace MailLink
             if (!File.Exists(queueFile))
             {
                 Queues q = new Queues();
-                q.Serialize();
+                //q.Serialize();
                 return q;
             }
             else
@@ -63,16 +74,16 @@ namespace MailLink
     {
         [XmlAttribute]
         //public string Alias { get; set; }
-        public string UID { get; set; }
+        public string Uid { get; set; }
 
         [XmlElement]
         public string MessageID { get; set; }
         public String Owner { get; set; }
-        public int Size { get; set; }
+        public long Size { get; set; }
         public Status Status { get; set; }
 
         [XmlIgnore]
-        public int Progress { get; set; }
+        public long BytesTransfered { get; set; }
 
         public Queue()
         {
